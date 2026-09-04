@@ -452,7 +452,7 @@ jobs:
             -o BatchMode=yes \
             -o PasswordAuthentication=no \
             "$DEPLOY_USERNAME@$DEPLOY_HOST" \
-            "bash -lc 'cd ${deploy_path} && echo Running npm dev. && npm run dev:background && echo npm dev finished.'"
+            "bash -lc 'cd ${deploy_path} && echo Running npm start. && npm run start:background && echo npm start finished.'"
 
       # restart the API server
       - name: Restart the API server
