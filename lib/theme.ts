@@ -1,12 +1,10 @@
 "use client";
 
-import { createTheme } from "@mui/material/styles";
-
 // Brand primary matches former SCSS --primary (#b82427); dark is default like Vuetify setup.
 export const brandPrimary = "#b82427";
 
 export function createAppTheme( mode: "light" | "dark" ) {
-	return createTheme( {
+	return {
 		palette: {
 			mode,
 			primary: {
@@ -28,5 +26,5 @@ export function createAppTheme( mode: "light" | "dark" ) {
 		shape: {
 			borderRadius: 10,
 		},
-	} );
+	};
 }
