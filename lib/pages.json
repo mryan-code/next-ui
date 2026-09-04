@@ -1,0 +1,17 @@
+[
+	{
+		"path": "/login",
+		"name": "Login",
+		"meta": { "page_id": "1", "auth_required": 2, "icon": null, "auth_level": 0, "slug": "login", "location": 0 }
+	},
+	{
+		"path": "/",
+		"name": "Home",
+		"meta": { "page_id": "3", "auth_required": 1, "icon": "House", "auth_level": 4, "slug": null, "location": 1 }
+	},
+	{
+		"path": "/error",
+		"name": "Error",
+		"meta": { "page_id": "25", "auth_required": 1, "icon": null, "auth_level": 0, "slug": "error", "location": 1 }
+	}
+]
