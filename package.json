@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "start:background": "next start & nohup next start > /dev/null 2>&1 &",
+    "start:background": "next start > /dev/null 2>&1 &",
     "lint": "eslint"
   },
   "dependencies": {
