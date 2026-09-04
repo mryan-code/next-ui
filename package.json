@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:deploy": "next build --webpack",
     "start": "next start",
     "start:background": "node scripts/StartNext.js start >> /dev/null 2>&1 &",
     "lint": "eslint"

@@ -434,7 +434,7 @@ jobs:
             -o BatchMode=yes \
             -o PasswordAuthentication=no \
             "$DEPLOY_USERNAME@$DEPLOY_HOST" \
-            "bash -lc 'cd ${deploy_path} && echo Running npm build. && npm run build && echo npm build finished.'"
+            "bash -lc 'cd ${deploy_path} && echo Running npm build. && npm run build:deploy && echo npm build finished.'"
 
       # Start the server
       - name: Start the server
