@@ -374,7 +374,7 @@ jobs:
             --exclude='.github' \
             --filter='P .env' \
             --filter='P node_modules/' \
-            --filter='P NextTemplate/' \
+            --filter='P Next/' \
             --rsync-path="$remote_rsync_path" \
             -e "ssh $SSH_KEEPALIVE_OPTIONS -p $DEPLOY_PORT -o ControlMaster=auto -o ControlPath=$control_path -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PasswordAuthentication=no" \
             ./ \
