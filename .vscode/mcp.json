@@ -1,0 +1,19 @@
+{
+	// Bug fix: JSON schema disallows conditional keys; use standard "servers" format.
+	"servers": {
+		// High-risk operation: runs remote package code via npx; requires human review.
+		"chrome-devtools": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"chrome-devtools-mcp@latest",
+				"--browser-url",
+				"http://192.168.50.192:45987",
+				"--usageStatistics",
+				"false",
+				"--auto-connect",
+				"true"
+			]
+		}
+	}
+}

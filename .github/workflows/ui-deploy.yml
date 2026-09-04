@@ -1,0 +1,487 @@
+name: Deploy to HOST
+run-name: Deploy to HOST (${{ github.event.head_commit.timestamp }})
+
+on:
+  push:
+    branches:
+      - main  # Triggers the workflow anytime you push changes to the main branch
+
+jobs:
+  deploy:
+    # Use DEPLOY_RUNNER repo variable (for example: self-hosted) when the target host is private-network only.
+    runs-on: 'ubuntu-latest'
+    env:
+      DEPLOY_HOST: 'dev-domain.duckdns.org'
+      DEPLOY_PORT: '22'
+      DEPLOY_USERNAME: 'inkt'
+      DEPLOY_PATH: '~/Documents/Personal/react-ui'
+      API_PORT: ''
+      API_PATH: '~/Documents/Personal/storm_zero/api'
+      SSH_KEEPALIVE_OPTIONS: "-o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o TCPKeepAlive=yes"
+
+    steps:
+      # Download the repository files onto the GitHub runner runner
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Connect to HOST via SSH
+      - name: Connect to HOST via SSH
+        run: |
+          echo "Preparing HOST SSH key."
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          echo "HOST SSH key is ready."
+
+      - name: SSH network preflight
+        run: |
+          set -euo pipefail
+          echo "Validating TCP reachability to ${DEPLOY_HOST}:${DEPLOY_PORT}."
+          # High-risk operation: validates remote network connectivity before deployment to avoid partial deploy side effects.
+          if ! timeout 10 bash -c "</dev/tcp/${DEPLOY_HOST}/${DEPLOY_PORT}"; then
+            echo "Unable to reach ${DEPLOY_HOST}:${DEPLOY_PORT} from GitHub runner." >&2
+            echo "Check HOST firewall/security group/NAT and ensure DEPLOY_PORT is correct in repository or environment secrets." >&2
+            exit 1
+          fi
+          echo "TCP preflight passed."
+
+      # Stop the running server if it is running
+      - name: Stop the running server if it is running
+        env:
+          SERVER_PORT: '23578'
+        run: |
+          set -euo pipefail
+          echo "Stopping remote server if it is running."
+          # High-risk operation: this stops the remote HOST service and must finish before deploy continues.
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "SERVER_PORT='$SERVER_PORT' DEPLOY_PATH='$DEPLOY_PATH' bash -l -s" <<'REMOTE_COMMAND'
+          set -euo pipefail
+
+          echo "Checking for existing server process."
+          deploy_path="${DEPLOY_PATH/#\~/$HOME}"
+
+          # Match the start step: only use .env when SERVER_PORT is not explicitly provided.
+          cd "$deploy_path" 2>/dev/null || true
+          if [ -z "${SERVER_PORT:-}" ] && [ -f ".env" ]; then
+            env_http_port="$(awk -F= '/^HTTP_PORT=/ { print $2; exit }' .env | tr -d '"'\'"'"'[:space:]')"
+            if [ -n "$env_http_port" ]; then
+              SERVER_PORT="$env_http_port"
+            fi
+          fi
+
+          if [ -z "${SERVER_PORT:-}" ]; then
+            echo "SERVER_PORT is not set; cannot determine which service to stop." >&2
+            exit 1
+          fi
+
+          npm_stop_succeeded="0"
+          if [ -f "scripts/Stop.js" ]; then
+            echo "Running npm stop script."
+            # High-risk operation: this invokes the project stop script on the remote HOST service.
+            if ! command -v npm >/dev/null 2>&1; then
+              echo "npm is not available in the remote shell; falling back to port-based stop."
+            elif npm run stop; then
+              echo "npm stop script finished."
+              npm_stop_succeeded="1"
+            else
+              echo "npm stop script did not complete; falling back to port-based stop."
+            fi
+          else
+            echo "npm stop script is not available on this deploy path yet; falling back to port-based stop."
+          fi
+
+          # The stop script is the source of truth for this project; if it reports success, treat this step as successful.
+          if [ "$npm_stop_succeeded" = "1" ]; then
+            echo "npm stop script succeeded; skipping port fallback checks."
+            exit 0
+          fi
+
+          can_sudo="0"
+          if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            can_sudo="1"
+          fi
+
+          run_privileged() {
+            if [ "$can_sudo" = "1" ]; then
+              sudo -n "$@"
+            else
+              "$@"
+            fi
+          }
+
+          has_listening_port() {
+            if command -v ss >/dev/null 2>&1; then
+              ss -ltn | awk '{ print $4 }' | grep -Eq "[:.]${SERVER_PORT}$"
+            elif command -v netstat >/dev/null 2>&1; then
+              netstat -ltn | awk '{ print $4 }' | grep -Eq "[:.]${SERVER_PORT}$"
+            else
+              return 1
+            fi
+          }
+
+          get_port_pids() {
+            local port_pids=""
+
+            if command -v ss >/dev/null 2>&1; then
+              port_pids="$(run_privileged ss -ltnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u || true)"
+            elif command -v netstat >/dev/null 2>&1; then
+              port_pids="$(run_privileged netstat -tlnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" | awk '{ print $7 }' | cut -d/ -f1 | grep -E '^[0-9]+$' | sort -u || true)"
+            fi
+
+            printf '%s\n' "$port_pids" | sed '/^$/d'
+          }
+
+          get_listener_pids() {
+            local listener_pids=""
+            local fuser_pids=""
+            local lsof_pids=""
+
+            listener_pids="$(get_port_pids || true)"
+
+            if command -v fuser >/dev/null 2>&1; then
+              fuser_pids="$(run_privileged fuser "${SERVER_PORT}/tcp" 2>/dev/null || true)"
+            fi
+
+            if command -v lsof >/dev/null 2>&1; then
+              lsof_pids="$(run_privileged lsof -nP -t -iTCP:"${SERVER_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+            fi
+
+            printf '%s\n%s\n%s\n' "$listener_pids" "$fuser_pids" "$lsof_pids" | tr ' ' '\n' | sed '/^$/d' | grep -E '^[0-9]+$' | sort -u
+          }
+
+          get_app_pids() {
+            ps -eo pid,args | awk -v deploy_path="$deploy_path" '
+              index($0, deploy_path) && /next([[:space:]]+|\/).*?(dev|start)/ && !/awk/ { print $1; next }
+              index($0, deploy_path) && /npm([[:space:]]+run)?[[:space:]]+(start|dev)/ && !/awk/ { print $1; next }
+              index($0, deploy_path) && /node([[:space:]]+.*)?next(\/dist)?/ && !/awk/ { print $1; next }
+              # Keep stop scope limited to UI deploy path to avoid killing unrelated services that may auto-restart.
+            ' | sort -u || true
+          }
+
+          # Kill the full server process tree so the npm wrapper and Node child both stop.
+          get_descendant_pids() {
+            local seed_pids="$1"
+            local all_pids=""
+            local next_pids=""
+
+            all_pids="$(printf '%s\n' "$seed_pids" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//' || true)"
+            if [ -z "$all_pids" ]; then
+              return 0
+            fi
+
+            while :; do
+              next_pids="$(ps -eo pid=,ppid= | awk -v pids="$all_pids" '
+                BEGIN {
+                  n = split(pids, wanted, /[[:space:]]+/)
+
+                  for (i = 1; i <= n; i++) {
+                    if (wanted[i] != "") {
+                      seen[wanted[i]] = 1
+                    }
+                  }
+                }
+
+                seen[$2] && !seen[$1] { print $1 }
+              ' | sed '/^$/d' | sort -u || true)"
+
+              if [ -z "$next_pids" ]; then
+                break
+              fi
+
+              all_pids="$(printf '%s\n%s\n' "$all_pids" "$next_pids" | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//' || true)"
+            done
+
+            printf '%s\n' "$all_pids" | tr ' ' '\n' | sed '/^$/d'
+          }
+
+          stop_matching_processes() {
+            local signal="$1"
+            local port_pids app_pids root_pids all_pids all_pgids
+
+            port_pids="$(get_port_pids || true)"
+            app_pids="$(get_app_pids || true)"
+            root_pids="$(printf '%s\n%s\n' "$port_pids" "$app_pids" | sed '/^$/d' | sort -u || true)"
+            all_pids="$(get_descendant_pids "$root_pids" || true)"
+
+            if [ -n "$all_pids" ]; then
+              echo "Stopping server process(es) with signal ${signal}: ${all_pids//$'\n'/ }"
+              # shellcheck disable=SC2086
+              run_privileged kill "-${signal}" $all_pids 2>/dev/null || true
+
+              # Also signal related process groups to avoid leaving detached children alive.
+              all_pgids="$(ps -o pgid= -p $(printf '%s ' $all_pids) 2>/dev/null | tr -d ' ' | sed '/^$/d' | sort -u || true)"
+              if [ -n "$all_pgids" ]; then
+                printf '%s\n' "$all_pgids" | while IFS= read -r pgid; do
+                  [ -n "$pgid" ] || continue
+                  run_privileged kill "-${signal}" "-$pgid" 2>/dev/null || true
+                done
+              fi
+
+              return 0
+            fi
+
+            return 1
+          }
+
+          stop_listener_processes() {
+            local signal="$1"
+            local listener_pids all_pids all_pgids
+
+            listener_pids="$(get_listener_pids || true)"
+            all_pids="$(get_descendant_pids "$listener_pids" || true)"
+
+            if [ -n "$all_pids" ]; then
+              echo "Stopping listener PID(s) with signal ${signal}: ${all_pids//$'\n'/ }"
+              # shellcheck disable=SC2086
+              run_privileged kill "-${signal}" $all_pids 2>/dev/null || true
+
+              all_pgids="$(ps -o pgid= -p $(printf '%s ' $all_pids) 2>/dev/null | tr -d ' ' | sed '/^$/d' | sort -u || true)"
+              if [ -n "$all_pgids" ]; then
+                printf '%s\n' "$all_pgids" | while IFS= read -r pgid; do
+                  [ -n "$pgid" ] || continue
+                  run_privileged kill "-${signal}" "-$pgid" 2>/dev/null || true
+                done
+              fi
+
+              return 0
+            fi
+
+            return 1
+          }
+
+          if ! has_listening_port; then
+            echo "No process is listening on port ${SERVER_PORT}."
+            exit 0
+          fi
+
+          stop_by_port_signal() {
+            local signal="$1"
+            if stop_listener_processes "$signal"; then
+              return 0
+            fi
+
+            echo "Stopping process by port and command-line fallback."
+            stop_matching_processes "$signal" || true
+          }
+
+          # Stop the existing Node server without relying on lsof, which is not installed on this HOST.
+          if ! stop_by_port_signal TERM; then
+            echo "No matching server process found for port ${SERVER_PORT}."
+            run_privileged ss -ltnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" || run_privileged netstat -tlnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" || true
+          fi
+
+          echo "Waiting for server port to close."
+          for attempt in $(seq 1 30); do
+            if ! has_listening_port; then
+              echo "Server is stopped."
+              exit 0
+            fi
+
+            if [ "$attempt" -ge 15 ] && [ "$((attempt % 3))" -eq 0 ]; then
+              echo "Port ${SERVER_PORT} is still open; sending SIGKILL to matching process(es) (attempt ${attempt})."
+              stop_by_port_signal KILL || true
+            fi
+
+            sleep 1
+          done
+
+          echo "Server did not stop on port ${SERVER_PORT} within 30 seconds." >&2
+          run_privileged ss -ltnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" || run_privileged netstat -tlnp 2>/dev/null | grep -E "[:.]${SERVER_PORT}[[:space:]]" || true
+          exit 1
+          REMOTE_COMMAND
+
+      # Deploy to HOST via Rsync
+      - name: Deploy to HOST via Rsync
+        env:
+          RSYNC_PORT: '873'
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Starting rsync deploy to HOST."
+          # High-risk operation: this writes the repository contents to the remote HOST app directory.
+          # Load the deploy key into ssh-agent because rsync opens its own SSH session.
+          eval "$(ssh-agent -s)"
+          control_path="$RUNNER_TEMP/nas_rsync_control"
+          trap 'ssh $SSH_KEEPALIVE_OPTIONS -p "$DEPLOY_PORT" -o ControlPath="$control_path" -O exit "$DEPLOY_USERNAME@$DEPLOY_HOST" >/dev/null 2>&1 || true; ssh-agent -k' EXIT
+          ssh-add "$HOME/.ssh/deploy_key"
+
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "mkdir -p ${deploy_path}"
+          echo "Remote deploy directory is ready."
+
+          # Confirm the HOST can run rsync and write to the target before starting the transfer.
+          echo "Checking remote rsync and deploy directory permissions."
+          remote_rsync_path="$(ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "command -v rsync")"
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "test -x '$remote_rsync_path' && test -w $deploy_path"
+          echo "Remote rsync preflight passed."
+
+          # Reuse one authenticated SSH control connection so rsync does not need a fresh login.
+          echo "Opening reusable SSH connection for rsync."
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -MNf \
+            -p "$DEPLOY_PORT" \
+            -o ControlMaster=yes \
+            -o ControlPath="$control_path" \
+            -o ControlPersist=60 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST"
+          ssh $SSH_KEEPALIVE_OPTIONS -p "$DEPLOY_PORT" -o ControlPath="$control_path" -O check "$DEPLOY_USERNAME@$DEPLOY_HOST"
+          echo "Reusable SSH connection is ready."
+
+          echo "Syncing repository files to HOST."
+          # Keep the HOST deploy directory in sync to avoid stale TypeScript files from prior apps/releases.
+          rsync \
+            -az \
+            --progress \
+            --stats \
+            --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --filter='P .env' \
+            --filter='P node_modules/' \
+            --rsync-path="$remote_rsync_path" \
+            -e "ssh $SSH_KEEPALIVE_OPTIONS -p $DEPLOY_PORT -o ControlMaster=auto -o ControlPath=$control_path -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PasswordAuthentication=no" \
+            ./ \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST:${deploy_path}/"
+          echo "Rsync deploy finished."
+
+      # NPM install
+      - name: Clear cached frontend build artifacts
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Clearing remote frontend build artifacts and Next.js cache."
+          # High-risk operation: this removes remote generated assets so the next build picks up current env values.
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "bash -lc 'cd ${deploy_path} && rm -rf .next dist node_modules/.cache && echo Remote frontend caches cleared.'"
+
+      - name: NPM install
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Installing dependencies on HOST."
+          # High-risk operation: this installs dependencies on the remote HOST and waits for npm to finish.
+          # Use a login Bash shell so the HOST user's PATH includes npm during SSH deploys.
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "bash -lc 'cd ${deploy_path} && echo Running npm install. && npm install && echo npm install finished.'"
+
+       # Build the server
+      - name: Build the server
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Building server on HOST."
+          # High-risk operation: this builds the remote HOST server and must complete before restart.
+          # Use a login Bash shell so the HOST user's PATH includes npm during SSH deploys.
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "bash -lc 'cd ${deploy_path} && echo Running npm build. && npm run build && echo npm build finished.'"
+
+      # Start the server
+      - name: Start the server
+        env:
+          SERVER_PORT: '23578'
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Starting server on HOST."
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "bash -lc 'cd ${deploy_path} && echo Running npm dev. && npm run dev:background && echo npm dev finished.'"
+
+      # restart the API server
+      - name: Restart the API server
+        run: |
+          set -euo pipefail
+          deploy_path="${DEPLOY_PATH%/}"
+          echo "Restarting API server on HOST."
+          # High-risk operation: this restarts the remote HOST API server and waits for the port to listen.
+          ssh \
+            $SSH_KEEPALIVE_OPTIONS \
+            -p "$DEPLOY_PORT" \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no \
+            -o BatchMode=yes \
+            -o PasswordAuthentication=no \
+            "$DEPLOY_USERNAME@$DEPLOY_HOST" \
+            "API_PATH='$API_PATH' bash -l -s" <<'REMOTE_COMMAND'
+          set -euo pipefail
+          echo "Restarting API server on HOST."
+          api_path="${API_PATH/#\~/$HOME}"
+          cd "$api_path"
+          if [ -f "scripts/stop-pm2.js" ]; then
+            npm run stop:pm2 || true
+          fi
+          npm run stop || true
+          if [ -f "scripts/start-pm2.js" ]; then
+            npm run start:pm2 || nohup npm run start > deploy-start.log 2>&1 &
+          else
+            nohup npm run start > deploy-start.log 2>&1 &
+          fi
+          REMOTE_COMMAND

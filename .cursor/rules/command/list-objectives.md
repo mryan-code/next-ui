@@ -1,0 +1,23 @@
+# List Objectives
+
+-   List the objectives on the Attorney Launch CRM & dashboard App Notion page
+-   The objectives should be listed in the following format:
+    -   [ ] Objective 1 Title
+        -   Objective 1 Date
+        -   Objective 1 Problem
+        -   Objective 1 Status
+        -   Objective 1 Importance + "%"
+        -   Objective 1 Subobjectives
+            -   [ ] Subobjective 1 Title
+                -   Subobjective 1 Date
+                -   Subobjective 1 Description
+                -   Subobjective 1 Status
+            -   [ ] Subobjective 2 Title
+                -   Subobjective 2 Date
+                -   Subobjective 2 Description
+                -   Subobjective 2 Status
+            -   [ ] Subobjective 3 Title
+                -   Subobjective 3 Date
+                -   Subobjective 3 Description
+                -   Subobjective 3 Status
+-   The objectives and subobjectives should be listed in the order they are listed in the Notion page

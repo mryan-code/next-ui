@@ -1,0 +1,1 @@
+- Please see a file named AGENTS.md for rules regarding this project

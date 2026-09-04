@@ -1,0 +1,1 @@
+- ```See @AGENTS.md``` (in the root directory) to read the AGENTS.md file for rules regarding this project
