@@ -55,14 +55,14 @@ if ( mode === "dev" && protocol === "https" ) {
 			"--experimental-https-cert",
 			certPath,
 		);
-		console.log( `Starting Next ${mode} with HTTPS on ${hostname}:${port}` );
+		console.log( `Starting Next ${mode}(${envName}) with HTTPS on ${hostname}:${port}` );
 	} else {
 		console.warn(
 			`HTTPS requested but certs missing (${keyPath}). Falling back to HTTP on ${hostname}:${port}.`,
 		);
 	}
 } else {
-	console.log( `Starting Next ${mode} on ${hostname}:${port}` );
+	console.log( `Starting Next ${mode}(${envName}) on ${hostname}:${port}` );
 }
 
 const child = spawn( nextBin, args, {
