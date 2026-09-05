@@ -1,7 +1,5 @@
-export default async function Login() {
-  return (
-    <div>
-      <h1>Login</h1>
-    </div>
-  );
+import LoginPage from "@/components/LoginPage";
+
+export default function LoginRoute() {
+	return <LoginPage />;
 }
