@@ -103,8 +103,8 @@ export default function LoginPage() {
 				subheader={<Typography variant="h5">Login</Typography>}
 			/>
 			<CardContent>
-				<Typography paragraph>Please enter your email and login code to continue.</Typography>
-				<Typography component="div" paragraph>
+				<Typography sx={{ mb: 2 }}>Please enter your email and login code to continue.</Typography>
+				<Typography component="div" sx={{ mb: 2 }}>
 					Steps:
 					<ol>
 						<li>Enter your email address in the &quot;Email&quot; field</li>

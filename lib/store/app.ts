@@ -1,8 +1,6 @@
 // Ported from Vue Pinia src/store/app.ts to Zustand for Next.js.
-"use client";
-
 import { create } from "zustand";
-import APIClass from "@/lib/api";
+import APIClass, { registerStoreGetter } from "@/lib/api";
 import * as types from "@/lib/types";
 import * as validation from "@/lib/validation";
 import moment from "moment-timezone";
@@ -764,3 +762,6 @@ export const useAppStore = create<AppState>( ( set, get ) => ( {
 		return endTimer.diff( startTimer, "milliseconds" );
 	},
 } ) );
+
+registerStoreGetter( () => useAppStore.getState() );
+

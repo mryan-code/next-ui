@@ -3,10 +3,17 @@ import * as types from "@/lib/types";
 import moment from "moment-timezone";
 import axios from "axios";
 import * as validation from "@/lib/validation";
-import { buildBackendURL, buildFrontendURL } from "@/lib/env";
+import { buildBackendURL, buildFrontendURL, getPublicEnv } from "@/lib/env";
 
 const backendURL = buildBackendURL();
 const frontendURL = buildFrontendURL();
+
+type StoreGetter = () => types.KeyValue;
+let storeGetter: StoreGetter | null = null;
+
+export function registerStoreGetter( getter: StoreGetter ) {
+	storeGetter = getter;
+}
 
 class API {
 	returnResponse: any;
@@ -17,10 +24,15 @@ class API {
 		this.frontendURL = frontendURL;
 	}
 
-	// Lazily read Zustand so API and store are not circular at module init.
 	get appStore() {
-		const { useAppStore } = require( "@/lib/store/app" ) as typeof import( "@/lib/store/app" );
-		return useAppStore.getState();
+		if ( storeGetter ) {
+			return storeGetter();
+		}
+		return {
+			loginTokenKey: getPublicEnv( "NEXT_PUBLIC_ENV", "development" ) + "_sz_login_token",
+			globalVars: {},
+			settings: {},
+		};
 	}
 
 	apiRequest = async (
